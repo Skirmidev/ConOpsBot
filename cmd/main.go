@@ -49,6 +49,11 @@ func main() {
 }
 
 func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	// err := viper.ReadInConfig()
+	// if err != nil {
+	// 	panic(fmt.Errorf("fatal error config file: %w", err))
+	// }
+
 	var C config
 	err := viper.Unmarshal(&C)
 	if err != nil {
@@ -67,7 +72,14 @@ func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
 				//in a user specific thread
 				var targetUser = getUserFromTopic(C, topicID)
 				ForwardMessageFromTopic(ctx, b, update, topicID, targetUser)
+				// b.EditForumTopic(ctx, &bot.EditForumTopicParams{
+				// 	ChatID: 			C.ConOpsChat,
+				// 	MessageThreadID: 	topicID,
+				// 	IconCustomEmojiID:
+				// })
+				b.GetForumTopicIconStickers(ctx)
 			}
+			
 
 		} else {
 			//this is from a user, get the topic ID
@@ -76,7 +88,7 @@ func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
 			if topicID != 0 {
 				//user has messaged before
 			} else {
-				createTopic(ctx, b, update)
+				topicID = createTopic(ctx, b, update)
 			}
 			ForwardMessageToTopic(ctx, b, update, topicID)
 		}
@@ -108,7 +120,7 @@ func getUserFromTopic(C config, topic int) string {
 	return C.Users[topic]
 }
 
-func createTopic(ctx context.Context, b *bot.Bot, update *models.Update) {
+func createTopic(ctx context.Context, b *bot.Bot, update *models.Update) int {
 	var createdTopic, _ = b.CreateForumTopic(ctx, &bot.CreateForumTopicParams{
 		ChatID: viper.GetString("conopschat"),
 		Name:   update.Message.From.FirstName + " " + update.Message.From.LastName,
@@ -116,6 +128,7 @@ func createTopic(ctx context.Context, b *bot.Bot, update *models.Update) {
 	viper.Set("Topics."+strconv.FormatInt(update.Message.Chat.ID, 10), createdTopic.MessageThreadID)
 	viper.Set("Users."+strconv.Itoa(createdTopic.MessageThreadID), strconv.FormatInt(update.Message.Chat.ID, 10))
 	viper.WriteConfig()
+	return createdTopic.MessageThreadID
 }
 
 func ForwardMessageToTopic(ctx context.Context, b *bot.Bot, update *models.Update, topicID int) {
