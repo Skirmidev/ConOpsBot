@@ -47,6 +47,11 @@ func main() {
 
 	//command handlers
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/block", bot.MatchTypeExact, blockHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/unblock", bot.MatchTypeExact, unblockHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/done", bot.MatchTypeExact, doneHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/undone", bot.MatchTypeExact, undoneHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/opendesk", bot.MatchTypeExact, opendeskHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "/closedesk", bot.MatchTypeExact, closedeskHandler)
 
 	b.Start(ctx)
 }
@@ -66,9 +71,9 @@ func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.EditedMessage != nil {
 		//edited message, include both old and new messages
 		//editedmessage has no information about the original message :/
-		if strconv.FormatInt(update.Message.Chat.ID, 10) == C.ConOpsChat {
+		if strconv.FormatInt(update.EditedMessage.Chat.ID, 10) == C.ConOpsChat {
 			//from conops chat
-			var topicID = update.Message.MessageThreadID
+			var topicID = update.EditedMessage.MessageThreadID
 			if topicID == 0 {
 				//in General thread - ignore
 			} else {
@@ -82,7 +87,7 @@ func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
 
 	//core forwarding logic
 	if update.Message != nil {
-		if update.Message.Text != "" || update.Message.Sticker != nil || update.Message.Photo != nil {
+		if (update.Message.Text != "" || update.Message.Sticker != nil || update.Message.Photo != nil) && update.Message.ForumTopicEdited == nil {
 			if strconv.FormatInt(update.Message.Chat.ID, 10) == C.ConOpsChat {
 				//this is from the conops chat
 				//check if a topic exists
@@ -93,32 +98,40 @@ func handler(ctx context.Context, b *bot.Bot, update *models.Update) {
 					//in a user specific thread
 					var targetUser = getUserFromTopic(C, topicID)
 					ForwardMessageFromTopic(ctx, b, update, topicID, targetUser)
+					//set topic icon to checkmark
+					SetTopicIcon(ctx, b, topicID, true)
 				}
 
 			} else {
 				//this is from a user, get the topic ID
 				//TODO: check if user is blocked
 				if isUserBlocked(C, strconv.FormatInt(update.Message.Chat.ID, 10)) {
-					//user is b locked - do nothing at this time. TODO: log later?
+					//user is blocked - do nothing at this time. TODO: log later?
 				} else {
 					var topicID = getTopicFromUser(C, strconv.FormatInt(update.Message.Chat.ID, 10))
 					if topicID != 0 {
 						//user has messaged before
 					} else {
 						topicID = createTopic(ctx, b, update)
+						SendMessageToUser(ctx, b, strconv.FormatInt(update.Message.Chat.ID, 10), "Hi, welcome to ConOps! This chat is your gateway to the ConOps team. If you haven't already, please send a message with your query now. Please also let us know your badge number to help us support you.")
 					}
-					ForwardMessageToTopic(ctx, b, update, topicID)
+					ForwardMessageToTopic(ctx, b, update, topicID)	
+					//set topic icon to eyeballs
+					SetTopicIcon(ctx, b, topicID, false)
+					if viper.GetString("status") == "closed" {
+						SendMessageToUser(ctx, b, strconv.FormatInt(update.Message.Chat.ID, 10), "Your message has been received, but the ConOps desk is currently closed - this chat is not being actively monitored at this time.")
+					}
 				}
 			}
 		}
-		//TODO: fix removing the topic edit message
-		// if update.Message.ForumTopicEdited != nil {
-		// 	//delete the message saying a forum topic was edited
-		// 	b.DeleteMessage(ctx, &bot.DeleteMessageParams{
-		// 		ChatID:    viper.GetString("conopschat"),
-		// 		MessageID: update.Message.ID,
-		// 	})
-		// }
+		// TODO: fix removing the topic edit message
+		if update.Message.ForumTopicEdited != nil {
+			//delete the message saying a forum topic was edited
+			b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+				ChatID:    viper.GetString("conopschat"),
+				MessageID: update.Message.ID,
+			})
+		}
 	}
 
 	//if the message has an image, do we  need to do something different?
@@ -143,8 +156,8 @@ func getUserFromTopic(C config, topic int) string {
 }
 
 func isUserBlocked(C config, user string) bool {
-	_, ok := C.Blocklist[user]
-	return ok
+	val, ok := C.Blocklist[user]
+	return ok && val != 0
 }
 
 func createTopic(ctx context.Context, b *bot.Bot, update *models.Update) int {
@@ -165,8 +178,6 @@ func ForwardMessageToTopic(ctx context.Context, b *bot.Bot, update *models.Updat
 		FromChatID:      update.Message.Chat.ID,
 		MessageID:       update.Message.ID,
 	})
-	//set topic icon to eyeballs
-	SetTopicIcon(ctx, b, topicID, false)
 }
 
 func ForwardMessageFromTopic(ctx context.Context, b *bot.Bot, update *models.Update, topicID int, targetUser string) {
@@ -175,8 +186,6 @@ func ForwardMessageFromTopic(ctx context.Context, b *bot.Bot, update *models.Upd
 		FromChatID: viper.GetString("conopschat"),
 		MessageID:  update.Message.ID,
 	})
-	//set topic icon to checkmark
-	SetTopicIcon(ctx, b, topicID, true)
 }
 
 func SetTopicIcon(ctx context.Context, b *bot.Bot, topicID int, responded bool) {
@@ -211,12 +220,7 @@ func SendMessageToUser(ctx context.Context, b *bot.Bot, targetUser string, messa
 	})
 }
 
-//hi, welcome to ConOps! This chat is your gateway to the ConOps team. If you haven't already, please send a message with your query now. Please also let us know your badge number to help us support you.
-//The ConOps desk is currently closed - this chat is not being actively monitored, we make no guarantee that your query will be answered.
-
 func blockHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	//first, check if this is in a thread
-	//if it is, close the thread, add user to blocklist
 	var C config
 	err := viper.Unmarshal(&C)
 	if err != nil {
@@ -229,40 +233,14 @@ func blockHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 			if topicID == 0 {
 				//in General thread - ignore
 			} else {
-				//in a user specific thread
-				//TODO: add to a blocklist in the config
 				viper.Set("Blocklist."+getUserFromTopic(C, topicID), topicID)
+				viper.WriteConfig()
 			}
 		}
 	}
 }
 
-// func unblockHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-// 	//first, check if this is in a thread
-// 	//if it is, close the thread, add user to blocklist
-// 	var C config
-// 	err := viper.Unmarshal(&C)
-// 	if err != nil {
-// 		fmt.Printf("unable to decode into struct, %v", err)
-// 	}
-
-// 	if update.Message != nil {
-// 		if strconv.FormatInt(update.Message.Chat.ID, 10) == C.ConOpsChat {
-// 			var topicID = update.Message.MessageThreadID
-// 			if topicID == 0 {
-// 				//in General thread - ignore
-// 			} else {
-// 				//in a user specific thread
-// 				//TODO: add to a blocklist in the config
-// 				//viper.Re("Blocklist."+getUserFromTopic(C, topicID), topicID)
-// 			}
-// 		}
-// 	}
-// }
-
-func activateHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	//first, check if this is in a thread
-	//if it is, close the thread, add user to blocklist
+func unblockHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	var C config
 	err := viper.Unmarshal(&C)
 	if err != nil {
@@ -273,18 +251,16 @@ func activateHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 		if strconv.FormatInt(update.Message.Chat.ID, 10) == C.ConOpsChat {
 			var topicID = update.Message.MessageThreadID
 			if topicID == 0 {
-				//in General thread
-				//set config 'online' to true
+				//in General thread - ignore
 			} else {
-				//in a thread - ignore
+				viper.Set("Blocklist."+getUserFromTopic(C, topicID), 0)
+				viper.WriteConfig()
 			}
 		}
 	}
 }
 
-func deactivateHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	//first, check if this is in a thread
-	//if it is, close the thread, add user to blocklist
+func doneHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	var C config
 	err := viper.Unmarshal(&C)
 	if err != nil {
@@ -298,8 +274,51 @@ func deactivateHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 				//in General thread - ignore
 			} else {
 				//in a user specific thread
-				//TODO: add to a blocklist in the config
+				SetTopicIcon(ctx, b, topicID, true)
 			}
 		}
 	}
+	deleteMessageInMainChat(ctx, b, update.Message.ID)
+}
+
+func undoneHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	var C config
+	err := viper.Unmarshal(&C)
+	if err != nil {
+		fmt.Printf("unable to decode into struct, %v", err)
+	}
+
+	if update.Message != nil {
+		if strconv.FormatInt(update.Message.Chat.ID, 10) == C.ConOpsChat {
+			var topicID = update.Message.MessageThreadID
+			if topicID == 0 {
+				//in General thread - ignore
+			} else {
+				//in a user specific thread
+				SetTopicIcon(ctx, b, topicID, false)
+			}
+		}
+		deleteMessageInMainChat(ctx, b, update.Message.ID)
+	}
+}
+
+func opendeskHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	viper.Set("status","active")
+	viper.WriteConfig()
+	SendMessageToTopic(ctx, b, 0, "The ConOps desk is now open")
+	deleteMessageInMainChat(ctx, b, update.Message.ID)
+}
+
+func closedeskHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+	viper.Set("status","closed")
+	viper.WriteConfig()
+	SendMessageToTopic(ctx, b, 0, "The ConOps desk has been closed")
+	deleteMessageInMainChat(ctx, b, update.Message.ID)
+}
+
+func deleteMessageInMainChat(ctx context.Context, b *bot.Bot, messageId int) {
+	b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+		ChatID:		viper.GetString("conopschat"),
+		MessageID:	messageId,
+	})
 }
