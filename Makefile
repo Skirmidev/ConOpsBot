@@ -1,12 +1,12 @@
-build:
+build-local:
 	go build cmd/main.go
 docker-build:
 	docker build . -t conops
-docker-start:
+start:
 	docker run --name conops -it --mount type=bind,src=$(CURDIR)/config,dst=/app/config --detach --restart unless-stopped -u 1000:1000 conops
-docker-stop:
+stop:
 	docker stop conops
-docker-clean:
+clean:
 	docker container rm conops
 reboot:
 	docker stop conops
